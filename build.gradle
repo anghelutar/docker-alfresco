@@ -1,0 +1,215 @@
+import groovy.json.JsonSlurper
+import java.io.*
+import groovyx.net.http.HTTPBuilder
+import groovyx.net.http.EncoderRegistry
+import static groovyx.net.http.Method.*
+import static groovyx.net.http.ContentType.*
+
+buildscript {
+	repositories {
+		mavenLocal()
+	}
+
+	dependencies {
+		classpath('eu.xenit.gradle:xenit-gradle-plugins:3.3.0')
+		classpath ('org.codehaus.groovy.modules.http-builder:http-builder:0.7.2')
+	}
+}
+
+
+// Integration with Vault -only used in the bundled images, as an example
+def getVaultToken() {
+	String pathToken = System.getProperty("user.home") + "/.vault-token"
+	if(new File(pathToken).exists()) {
+		String token = new File(pathToken).text
+		return token
+	} else {
+		throw new GradleException('Vault token should be set in ~/.vault-token')
+	}
+}
+
+def getApproleSecretId(){
+	def http = new HTTPBuilder('https://vault.local.xenit.eu:8200/')
+
+	http.ignoreSSLIssues()
+	def json = '';
+	def request = http.request(POST, TEXT ) {
+		requestContentType = JSON;
+		uri.path = 'v1/auth/approle/role/jenkins/secret-id'
+		headers.'X-Vault-Token' = getVaultToken()
+		headers.'Accept' = 'application/json'
+		headers.'Host' = 'vault.local.xenit.eu'
+
+		response.success = { resp, reader ->;
+			String jsonResponse = (reader.readLines().join() as String)
+			json = new JsonSlurper().parseText(jsonResponse)
+		}
+		response.failure = { resp, reader ->;
+			throw new GradleException("Could not connect to vault: ${resp.getStatus()}, ${resp.getStatusLine()}")
+		}
+	}
+
+	def secret_id=json.data.secret_id
+	return secret_id
+}
+
+def calcTags (version) {
+	return [
+			"${version.major}.${version.minor}.${version.rev}".toString(),
+			"${version.major}.${version.minor}".toString()
+	];
+}
+
+subprojects {
+	configurations {
+		sharedLib
+		sharedBin
+	}
+
+	if("${project.projectDir}".toLowerCase().contains('skeleton') || ("${project.projectDir}".toLowerCase().contains('bundle') && !(("${project.projectDir}".toLowerCase().contains('onbuild'))))) {
+		apply plugin: 'java'
+		apply plugin: 'xenit-dockerbuild'
+	} else if(("${project.projectDir}".contains('enterprise') || "${project.projectDir}".contains('community')) && !("${project.projectDir}".contains('bundle'))) {
+		apply plugin: 'java'
+		apply plugin: 'xenit-applyamps'
+	}
+
+	if(new File("${project.projectDir}/../overload.gradle").exists())
+		apply from: "${project.projectDir}/../overload.gradle"
+	if(new File("${project.projectDir}/overload.gradle").exists())
+		apply from: "${project.projectDir}/overload.gradle"
+
+	if("${project.alfresco.flavor}" == "skeleton" || "${project.alfresco.flavor}" == "enterprise-bundle") {
+		def workingDir = "$project.buildDir/dockerbuild"
+
+		task copyDockerfile(type: Copy) {
+			from("$project.parent.projectDir/src/main/resources/dockerfiles/") {
+				include "Dockerfile.${project.alfresco.version.major}.${project.alfresco.version.minor}-${project.alfresco.flavor}"
+				rename "Dockerfile.${project.alfresco.version.major}.${project.alfresco.version.minor}-${project.alfresco.flavor}", 'Dockerfile'
+			}
+			into workingDir
+		}
+		task copyGlobalResources(type: Copy) {
+			from "$project.parent.projectDir/src/main/resources/global"
+			into workingDir
+		}
+		task copyLocalResources(type: Copy) {
+			from "$project.projectDir/local"
+			into workingDir
+		}
+		buildDockerImage.dependsOn(copyGlobalResources)
+		buildDockerImage.dependsOn(copyDockerfile)
+		buildDockerImage.dependsOn(copyLocalResources)
+
+		dockerFile {
+			dockerFile = file("$workingDir/Dockerfile")
+			dockerBuild {
+				repository = "hub.xenit.eu/alfresco-"+"${project.alfresco.flavor}"
+				tags = calcTags(project.alfresco.version)
+			}
+		}
+
+		buildDockerImage {
+			buildArgs = [
+					'ALFRESCO_VERSION_MAJOR': "${project.alfresco.version.major}",
+					'ALFRESCO_VERSION_MINOR': "${project.alfresco.version.minor}",
+					'ALFRESCO_VERSION_REV': "${project.alfresco.version.rev}",
+					'ALFRESCO_FLAVOR': "${project.alfresco.flavor}"
+			]
+
+			if (project.hasProperty('extraBuildArgs'))
+				buildArgs << project.extraBuildArgs
+
+			doFirst {
+				println buildArgs
+			}
+		}
+
+	} else if("${project.alfresco.flavor}" == "enterprise" || ("${project.alfresco.flavor}"=="community")) {
+
+		def skeleton = ":${project.alfresco.version.major}"+"."+"${project.alfresco.version.minor}"+"/skeleton"
+		def path = "${skeleton}:buildLabels"
+
+		dockerAlfresco {
+			baseImage = {project(skeleton).getTasks().getByName('buildLabels').getImageId()}
+			dockerBuild {
+				repository = "hub.xenit.eu/alfresco-"+"${project.alfresco.flavor}"
+				tags = calcTags(project.alfresco.version)
+			}
+		}
+
+		afterEvaluate {
+			createDockerFile.dependsOn(path)
+
+			createDockerFile {
+				inputs.files configurations.sharedLib
+				inputs.files configurations.sharedBin
+
+				doFirst {
+					project.delete(file("${destFile.parent}/shared"))
+					copy {
+						from configurations.sharedLib
+						into destFile.parent + "/shared/lib"
+
+					}
+
+
+					if(!configurations.sharedBin.isEmpty()) {
+						copy {
+							from tarTree(resources.gzip(configurations.sharedBin.singleFile))
+							into destFile.parent + "/shared/bin"
+						}
+					}
+				}
+
+
+				if(!configurations.sharedLib.isEmpty()) {
+					copyFile './shared/lib/*.jar', '${CATALINA_HOME}/shared/lib/'
+				}
+				if(!configurations.sharedBin.isEmpty()) {
+					copyFile './shared/bin/*', '/opt/alfresco'
+				}
+			}
+		}
+
+		dockerCompose {
+			def composePath = "${project.parent.projectDir}/src/main/resources/docker-compose-solr6.yml"
+			if("${project.solrimage}".contains("solr4")) {
+				composePath = "${project.parent.projectDir}/src/main/resources/docker-compose-solr4.yml"
+			}
+			if("${project.solrimage}".contains("solr1")) {
+				composePath = "${project.parent.projectDir}/src/main/resources/docker-compose-solr1.yml"
+			}
+			useComposeFiles = [composePath]
+			environment.put 'SOLR_IMAGE', project.solrimage
+		}
+
+		if (project.hasProperty('tests') && project.tests) {
+			sourceSets {
+				test {
+					java {
+						srcDirs = ["${project.parent.projectDir}/src/test"]
+					}
+				}
+			}
+			dependencies {
+				testCompile 'org.codehaus.groovy:groovy-all:2.4.7'
+				testCompile group: 'io.rest-assured', name: 'rest-assured', version: '3.0.1'
+				testCompile group: 'io.rest-assured', name: 'json-path', version: '3.0.1'
+				testCompile group: 'io.rest-assured', name: 'rest-assured-common', version: '3.0.1'
+				testCompile group: 'junit', name: 'junit', version: '4.11'
+			}
+			test {
+				dependsOn composeUp
+				doFirst {
+					dockerCompose.exposeAsSystemProperties(test)
+					systemProperty("flavor", "${project.alfresco.flavor}")
+					systemProperty("version", "${project.alfresco.version.major}" + "." + "${project.alfresco.version.minor}")
+				}
+				finalizedBy(composeDown)
+			}
+		}
+	}
+}
+
+

@@ -1,0 +1,16 @@
+version: '2'
+
+services:
+  alfresco:
+    image: hub.xenit.eu/alfresco-enterprise-bundle:local-3.4.14
+    volumes:
+    - alfresco-data:/opt/alfresco/alf_data
+    ports:
+    - 8080:8080
+    tty: true
+    environment:
+    - JAVA_OPTS_cifs.enabled=-Dcifs.enabled=false
+    - GLOBAL_ftp.enabled=false
+    - MAX_HTTP_HEADER_SIZE=65536
+volumes:
+  alfresco-data:

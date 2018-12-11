@@ -1,0 +1,47 @@
+buildscript {
+    repositories {
+        mavenLocal()
+    }
+
+   dependencies {
+       classpath('eu.xenit.gradle:xenit-gradle-plugins:3.1.0-42')
+   }
+}
+
+apply plugin: 'xenit-dockerbuild'
+
+ext {
+    alfresco = {}
+    alfresco.version = {}
+    alfresco.version.major = 4
+    alfresco.version.minor = 2
+    alfresco.version.rev = '6-onbuild'
+}
+
+
+def calcTags (version) {
+    return [
+            "${version.major}.${version.minor}.${version.rev}",
+            "${version.major}.${version.minor}"
+    ];
+}
+
+dockerFile {
+    dockerFile = file('Dockerfile')
+    dockerBuild {
+        repository = 'hub.xenit.eu/alfresco-enterprise-bundle'
+        tags = calcTags(project.alfresco.version)	
+    }
+}
+
+buildDockerImage {
+    buildArgs = project.hasProperty('debug')?["DEBUG": "1"]:[:]
+    copy {
+        from "amps"
+        into "./build/labelDocker/amps"
+    }
+    copy {
+        from "amps_share"
+        into "./build/labelDocker/amps_share"
+    }    
+}

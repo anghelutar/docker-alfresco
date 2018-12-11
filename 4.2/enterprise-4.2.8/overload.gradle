@@ -1,0 +1,21 @@
+ext {
+    alfresco = [
+            version: [
+                    major: 4,
+                    minor: 2,
+                    rev: 8,
+            ],
+            flavor: 'enterprise'
+    ]
+    solrimage = 'hub.xenit.eu/alfresco-solr1:4.2.8'
+    tests = true
+}
+
+
+dependencies {
+    alfrescoAmp "eu.xenit.transformers:alfresco-remote-jodconverter:1.1@amp"
+    baseAlfrescoWar 'org.alfresco:alfresco:4.2.8@war'
+    baseShareWar 'org.alfresco:share:4.2.8@war'
+
+    sharedLib(group: 'org.postgresql', name: 'postgresql', version: '9.4.1212.jre7')
+}

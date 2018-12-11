@@ -1,0 +1,30 @@
+version: '3'
+
+services:
+ alfresco:
+   image: ${DOCKER_IMAGE}
+   ports:
+     - 8080
+   restart: unless-stopped
+   environment:
+   - SOLR_HOST=solr
+
+ solr:
+   image: ${SOLR_IMAGE}
+   ports:
+   - 8443
+   restart: unless-stopped
+   environment:
+   - ALFRESCO_HOST=alfresco
+
+ postgresql:
+   image: hub.xenit.eu/postgres
+   environment:
+   - POSTGRES_USER=alfresco
+   - POSTGRES_PASSWORD=admin
+   - POSTGRES_DB=alfresco
+   restart: unless-stopped
+
+ jodconverter:
+   image: hub.xenit.eu/jodconverter-ws
+   restart: unless-stopped

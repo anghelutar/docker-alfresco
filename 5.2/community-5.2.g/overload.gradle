@@ -1,0 +1,21 @@
+ext {
+    alfresco = [
+            version: [
+                    major: 5,
+                    minor: 2,
+                    rev: 'g',
+            ],
+            flavor: 'community'
+    ]
+    solrimage = 'hub.xenit.eu/alfresco-solr6:1.1.1'
+    tests = true
+}
+
+dependencies {
+    alfrescoAmp 'org.alfresco:alfresco-share-services:5.2.f@amp'
+    alfrescoAmp "eu.xenit.transformers:alfresco-remote-jodconverter:1.1@amp"
+    baseAlfrescoWar 'org.alfresco:alfresco-platform:5.2.g@war'
+
+    sharedBin(group: 'org.alfresco', name: 'alfresco-pdf-renderer', version: '1.1', classifier: 'linux', ext: 'tgz')
+    sharedLib(group: 'org.postgresql', name: 'postgresql', version: '9.4.1212')
+}

@@ -1,0 +1,129 @@
+FROM ubuntu:14.04
+
+ARG ALFRESCO_VERSION_MAJOR
+ARG ALFRESCO_VERSION_MINOR
+ARG ALFRESCO_VERSION_REV
+ARG ALFRESCO_FLAVOR
+ARG SECRET_ID
+
+# download location alf
+ENV ALFRESCO_VERSION ${ALFRESCO_VERSION_MAJOR}.${ALFRESCO_VERSION_MINOR}.${ALFRESCO_VERSION_REV}
+ENV ALFRESCO_FLAVOR ${ALFRESCO_FLAVOR}
+
+ENV CATALINA_HOME /opt/alfresco/tomcat
+ENV JAVA_HOME /opt/alfresco/java
+
+RUN useradd alfresco -u 1000 -d /opt/alfresco -s /bin/bash
+USER root
+
+RUN chown -R alfresco:alfresco /tmp /opt && \
+
+    echo "Europe/Brussels" > /etc/timezone && \
+    dpkg-reconfigure -f noninteractive tzdata && \
+    
+    apt-get update && \
+    apt-get install -y \
+        curl \
+        libcups2 \
+        # libdbus required for libreofficecomponent
+        libdbus-glib-1-2 \
+        libice6 \
+        libfontconfig1 \
+        libsm6 \
+        libxt6 \
+        libxrender1 \
+        libxinerama1 \ 
+	libgl1-mesa-glx \
+	libglu1-mesa \
+	xmlstarlet \
+	jq && \
+
+    # Get artifactory credentials
+    APPROLE_ID="0fbdaa0a-86db-d637-f8f5-19a41106fc20" && \
+    token=$(curl -k --request POST --data "{\"role_id\":\"$APPROLE_ID\",\"secret_id\":\"$SECRET_ID\"}" https://vault.local.xenit.eu:8200/v1/auth/approle/login | jq -r .auth.client_token) && \
+    ARTIFACTORY_LOGIN=$(curl -k -H "X-Vault-Token: $token" -X GET https://vault.local.xenit.eu:8200/v1/secret/Applications/artifactory.xenit.eu/readall | jq -r '"\(.data.username):\(.data.password)"') && \
+
+    # Download Alfresco installer from artifactory.xenit.eu
+    echo "ARTIFACTORY_LOGIN=$ARTIFACTORY_LOGIN" && \
+    curl -o /tmp/installer.bin https://${ARTIFACTORY_LOGIN}@artifactory.xenit.eu/artifactory/simple/xenit-release-local/org/alfresco/enterprise/${ALFRESCO_VERSION}/enterprise-${ALFRESCO_VERSION}-installer-linux-x64.bin && \
+    chmod +x /tmp/installer.bin 
+
+RUN    rm -rf /var/lib/apt/lists/* && \
+
+    # Install as user alfresco
+
+    # The `install_opts` are documented at http://docs.alfresco.com/5.0/concepts/silent-alf-install.html
+    # We're preferring to specify the options as arguments
+    sudo --user alfresco /tmp/installer.bin \
+
+    # Installation mode.
+    # Default is `gtk`. Options are `gtk`, `xwindow`, `text`, `unattended`.
+    --mode unattended \
+
+    # Default is `javaalfresco,postgres,alfresco,alfrescosharepoint,alfrescorm,alfrescowcmqs,alfrescowcm,alfrescoquickr,openofficecomponent`
+    # Options are `javaalfresco`, `postgres`, `alfrescosharepoint`, `alfrescorm`, `alfrescowcmqs`, `alfrescowcm`, `alfrescoquickr`, `openofficecomponent`
+    --enable-components javaalfresco,postgres,openofficecomponent \
+
+    # Default is 
+    # Options are `javaalfresco`, `postgres`, `alfrescosharepoint`, `alfrescorm`, `alfrescowcmqs`, `alfrescowcm`, `alfrescoquickr`, `openofficecomponent`
+    --disable-components alfrescowcmqs,alfrescosharepoint,alfrescorm,alfrescowcm,alfrescoquickr \
+
+    # Install location
+    --prefix /opt/alfresco \
+
+    # Set a default admin password
+    --alfresco_admin_password admin \
+
+    # Option to install Alfresco as a service. Default is `1`
+    --baseunixservice_install_as_service 0 && \
+
+    # Configure server.xml
+    xmlstarlet edit --inplace \
+        --var server "/Server/@port" \
+            --update '$server' --value \$\{TOMCAT_SERVER_PORT\} \
+        --delete "/Server/Listener[@className='org.apache.catalina.core.JasperListener']" \
+        --delete "/Server/Listener[@className='org.apache.catalina.core.JreMemoryLeakPreventionListener']" \
+        --delete "/Server/Listener[@className='org.apache.catalina.core.ThreadLocalLeakPreventionListener']" \
+        --var connector "/Server/Service[@name='Catalina']/Connector[@protocol=\"HTTP/1.1\"]/@port" \
+            --update '$connector' --value \$\{TOMCAT_PORT\} \
+            --insert '$connector' --type attr --name URIEncoding --value UTF-8 \
+            --insert '$connector' --type attr --name maxThreads --value \$\{TOMCAT_MAX_THREADS\} \	    
+            --insert '$connector' --type attr --name maxHttpHeaderSize --value \$\{TOMCAT_MAX_HTTP_HEADER_SIZE\} \
+        --var connector "/Server/Service[@name='Catalina']/Connector[@protocol=\"AJP/1.3\"]/@port" \
+            --update '$connector' --value \$\{TOMCAT_AJP_PORT\} \	
+            --insert '$connector' --type attr --name URIEncoding --value UTF-8 \
+          ${CATALINA_HOME}/conf/server.xml && \
+
+# clean up
+	apt-get --purge -y remove xmlstarlet && \
+        apt-get --purge -y autoremove && \
+        rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+COPY startup.sh /opt/alfresco/tomcat/bin/
+RUN chown alfresco:alfresco /opt/alfresco/tomcat/bin/startup.sh
+
+#install gosu to run catalina.sh as user tomcat in init.sh
+ENV GOSU_VERSION 1.9
+RUN set -x \
+    && apt-get update && apt-get install -y --no-install-recommends ca-certificates wget && rm -rf /var/lib/apt/lists/* \
+    && dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" \
+    && wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch" \
+    && wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc" \
+    && export GNUPGHOME="$(mktemp -d)" \
+    && gpg --keyserver ha.pool.sks-keyservers.net --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4 \
+    && gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu \
+    && rm -r "$GNUPGHOME" /usr/local/bin/gosu.asc \
+    && chmod +x /usr/local/bin/gosu \
+    && gosu nobody true \
+    && apt-get purge -y --auto-remove ca-certificates wget
+
+COPY init.sh /opt/alfresco/
+
+# share-config-custom - disables CSRF toeken for now
+# TODO use envsubst to put in $HOSTNAME ?
+ADD share-config-custom.xml ${CATALINA_HOME}/shared/classes/alfresco/web-extension/
+
+VOLUME ${CATALINA_HOME}/temp ${CATALINA_HOME}/logs
+
+ENTRYPOINT ["/opt/alfresco/init.sh"]
+CMD ["app:start"]

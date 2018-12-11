@@ -1,0 +1,14 @@
+ext {
+	alfresco = [
+			version: [
+					major: 4,
+					minor: 2,
+					rev: 6,
+			],
+			flavor: 'enterprise-bundle'
+	]
+	extraBuildArgs = [
+			'SECRET_ID': getApproleSecretId()
+	]
+}
+

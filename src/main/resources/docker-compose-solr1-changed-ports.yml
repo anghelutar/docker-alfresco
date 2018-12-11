@@ -1,0 +1,32 @@
+version: '3'
+services:
+  alfresco:
+    image: ${DOCKER_IMAGE}
+    restart: unless-stopped
+    ports:
+    - 8080
+    environment:
+    - SOLR_HOST=solr
+    - SOLR_PORT_SSL=8444
+    - JAVA_OPTS=-XX:MaxPermSize=512m
+
+  solr:
+    image: hub.xenit.eu/alfresco-solr1:4.2.8
+    restart: unless-stopped
+    ports:
+    - 8444
+    environment:
+    - ALFRESCO_HOST=alfresco
+    - TOMCAT_PORT_SSL=8444
+
+  postgresql:
+    image: hub.xenit.eu/postgres
+    environment:
+    - POSTGRES_USER=alfresco
+    - POSTGRES_PASSWORD=admin
+    - POSTGRES_DB=alfresco
+    restart: unless-stopped
+    
+  jodconverter:
+    image: hub.xenit.eu/jodconverter-ws
+    restart: unless-stopped

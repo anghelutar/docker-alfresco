@@ -1,0 +1,17 @@
+version: '2'
+
+services:
+  alfresco:
+    image: hub.xenit.eu/alfresco-enterprise-bundle:4.2.6-local-onbuild
+    volumes:
+    - alfresco-data:/opt/alfresco/alf_data
+    ports:
+    - ${NET_PRIVATE_IP}::8080
+    network_mode: bridge
+    tty: true
+    environment:
+     - SERVICE_NAME=nonlife
+     - SERVICE_TAGS=proxy-http
+
+volumes:
+  alfresco-data:
